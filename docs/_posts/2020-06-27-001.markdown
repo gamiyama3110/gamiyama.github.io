@@ -1,0 +1,144 @@
+---
+layout: post
+title: "monitをdocker上で使ってみる"
+date : 2020-06-27T00:00:00+0900
+categories: docker
+---
+# monitとは
+サービス監視を手軽に実装できるソフトウェア。
+アラート投げたり、自動復旧させたりすることが行える。
+
+今回はmonitの検証環境をdockerに立ち上げて使ってみる。
+
+# 環境構築
+まずはdockerを立てる。大好き`CentOS7`。
+
+```sh
+docker run -d --privileged --name monit-work -it centos:7 /sbin/init
+docker exec -it monit-work /bin/bash
+yum -y update
+yum -y install epel-release
+yum -y install monit
+```
+docker上で`systemctl`を利用したいので `--privileged` `/sbin/init` を指定。
+
+## テスト用のapacheインストール
+今回はwebサーバの監視想定。
+
+```sh
+yum -y install httpd
+systemctl start httpd
+[root@fb0cc3775ea4 /]# curl localhost
+[root@fb0cc3775ea4 /]# tail -f /var/log/httpd/access_log
+127.0.0.1 - - [03/Jun/2020:11:53:28 +0000] "HEAD / HTTP/1.1" 403 - "-" "curl/7.29.0"
+```
+
+# monit起動
+monitをサービスに登録して動かす。
+
+```sh
+systemctl start monit
+```
+
+> 確認
+
+```sh
+[root@fb0cc3775ea4 /]# systemctl status monit
+● monit.service - Pro-active monitoring utility for unix systems
+   Loaded: loaded (/usr/lib/systemd/system/monit.service; disabled; vendor preset: disabled)
+   Active: active (running) since Wed 2020-06-03 11:39:44 UTC; 8s ago
+...
+
+[root@fb0cc3775ea4 /]# tail -f /var/log/monit.log
+[UTC Jun  3 11:39:44] info     :  New Monit id: 292c1f7c8758211287c81b92c38f0579
+ Stored in '/root/.monit.id'
+[UTC Jun  3 11:39:44] info     : Starting Monit 5.26.0 daemon with http interface at [localhost]:2812
+[UTC Jun  3 11:39:44] info     : 'fb0cc3775ea4' Monit 5.26.0 started
+```
+
+# pidでプロセス監視
+ここからはmonitの設定と検証をしてみる。
+
+早く確認するため、監視の間隔を6秒に変更。デフォルトは30秒。
+
+```sh
+[root@fb0cc3775ea4 /]# grep daemon /etc/monitrc
+## Start Monit in the background (run as a daemon):
+set daemon  6              # check services at 30 seconds intervals
+```
+
+設定ファイルは`/etc/monit.d/`の配下に配置すればOK。
+pidをチェックしてもらい、プロセスが死んでいれば再起動させる。
+
+```sh
+cat << EOF > /etc/monit.d/myservice
+check process httpd with pidfile /var/run/httpd/httpd.pid
+  every 2 cycle
+  start program "/bin/systemctl start httpd"
+  stop program "/bin/systemctl stop httpd"
+EOF
+```
+
+> 構文チェック
+
+```sh
+[root@fb0cc3775ea4 /]# monit -t
+Control file syntax OK
+```
+
+> リロード
+
+```sh
+monit reload
+```
+
+`status`オプションで監視中の一覧を確認することができる。
+
+```sh
+[root@fb0cc3775ea4 /]# monit status
+Monit 5.26.0 uptime: 31m
+
+Process 'httpd'
+  status                       Does not exist
+  monitoring status            Monitored
+  monitoring mode              active
+  on reboot                    start
+  data collected               Wed, 03 Jun 2020 12:10:45
+```
+
+## 検証
+サービスを落としてログをモニターする。
+
+```sh
+[root@fb0cc3775ea4 /]# systemctl stop httpd
+[root@fb0cc3775ea4 /]# tail -f /var/log/monit.log
+[UTC Jun  3 12:15:45] error    : 'httpd' process is not running
+[UTC Jun  3 12:15:45] info     : 'httpd' trying to restart
+[UTC Jun  3 12:15:45] info     : 'httpd' start: '/bin/systemctl start httpd'
+```
+立ち上げてくれた。
+
+# 外部サービスを監視
+URIをチェックの対象とすることもできる。
+
+```sh
+check host backend with address backend.hogehoge.com
+  if failed url http://backend.hogehoge.com/
+  then restart
+```
+`restart`を付けてるが、こんな指定だと空振りで終わる。
+
+> hosts変えて繋がらなくする
+
+```sh
+[root@fb0cc3775ea4 /]# tail -f /var/log/monit.log
+[UTC Jun  3 12:42:14] error    : 'backend' failed protocol test [HTTP] at [backend.hogehoge.com]:80/ [TCP/IP] -- HTTP error: Server returned status 403
+[UTC Jun  3 12:42:14] info     : 'backend' trying to restart
+```
+エンドポイントをチェックしてレスポンスステータスを確認してるのがわかる。
+
+> hosts戻す
+
+```sh
+[UTC Jun  3 12:42:20] info     : 'backend' connection succeeded to [backend.hogehoge.com]:80/ [TCP/IP]
+```
