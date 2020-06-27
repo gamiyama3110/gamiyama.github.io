@@ -23,7 +23,7 @@ title: ZAPPED TOKYO TECH !!!
 description: >-
   クタクタになったおっさんのテックブログ。
   技術ネタ、つぶやき、メモと酒を吐き出す。
-baseurl: "https://gamiyama3110.github.io/gamiyama.github.io/" # the subpath of your site, e.g. /blog
+baseurl: "/blog" # the subpath of your site, e.g. /blog
 url: "" # the base hostname & protocol for your site, e.g. http://example.com
 twitter_username: yamCurry
 github_username: gamiyama3110
